@@ -62,7 +62,7 @@ def tokenize(input_str):
             else:
                 tokens.append(Token('OPERATOR' if char != '=' else 'ASSIGNMENT', char))
                 i += 1
-        elif char in '(){':
+        elif char in '(){}':
             tokens.append(Token('PAREN' if char in '()' else 'BRACE', char))
             i += 1
         else:
@@ -99,6 +99,10 @@ class IfNode:
     def __init__(self, condition, body):
         self.condition = condition
         self.body = body
+
+class BlockNode:
+    def __init__(self, statements):
+        self.statements = statements
 
 class Parser:
     def __init__(self, tokens):
@@ -154,15 +158,22 @@ class Parser:
             node = BinaryOpNode(node, op, right)
         return node
 
+    def block(self):
+        statements = []
+        # Parse statements until we see a closing '}'
+        while self.peek().type != 'BRACE' or self.peek().value != '}':
+            statements.append(self.statement())
+        return BlockNode(statements)
+
     def statement(self):
         if self.peek().type == 'KEYWORD' and self.peek().value == 'if':
             self.consume('KEYWORD')
             self.consume('PAREN')
             condition = self.expression()
             self.consume('PAREN')
-            self.consume('BRACE')
-            body = self.statement()
-            self.consume('BRACE')
+            self.consume('BRACE')  # consume '{'
+            body = self.block()
+            self.consume('BRACE')  # consume '}'
             return IfNode(condition, body)
         elif self.peek().type == 'IDENTIFIER' and self.pos + 1 < len(self.tokens) and self.tokens[self.pos + 1].type == 'ASSIGNMENT':
             var = self.consume('IDENTIFIER').value
@@ -216,6 +227,11 @@ def semantic_analysis(ast, symbol_table):
         if not isinstance(condition, (int, float)):
             raise ValueError("Condition must be numeric")
         return semantic_analysis(ast.body, symbol_table)
+    elif isinstance(ast, BlockNode):
+        result = None
+        for stmt in ast.statements:
+            result = semantic_analysis(stmt, symbol_table)
+        return result
 
 # ---- Bytecode Generation ----
 class Bytecode:
@@ -233,6 +249,7 @@ def generate_bytecode(ast, bytecode, symbol_table):
     elif isinstance(ast, AssignNode):
         generate_bytecode(ast.value, bytecode, symbol_table)
         bytecode.emit(('STORE', ast.var))
+        bytecode.emit(('LOAD', ast.var))  # <-- Push the assigned value to the stack
     elif isinstance(ast, BinaryOpNode):
         generate_bytecode(ast.left, bytecode, symbol_table)
         generate_bytecode(ast.right, bytecode, symbol_table)
@@ -247,6 +264,12 @@ def generate_bytecode(ast, bytecode, symbol_table):
         bytecode.emit(('JUMP_IF_FALSE', None))  # Placeholder
         generate_bytecode(ast.body, bytecode, symbol_table)
         bytecode.instructions[false_label] = ('JUMP_IF_FALSE', len(bytecode.instructions))
+    elif isinstance(ast, BlockNode):
+        for i, stmt in enumerate(ast.statements):
+            generate_bytecode(stmt, bytecode, symbol_table)
+            # Only keep the result of the last statement on the stack
+            if i < len(ast.statements) - 1:
+                bytecode.emit(('POP',))
 
 # ---- Execution Engine ----
 class VM:
@@ -256,6 +279,7 @@ class VM:
         self.pc = 0
 
     def run(self, bytecode):
+        self.stack = []
         self.pc = 0
         while self.pc < len(bytecode.instructions):
             instr = bytecode.instructions[self.pc]
@@ -310,6 +334,9 @@ class VM:
                 if self.stack.pop() == 0.0:
                     self.pc = instr[1]
                     continue
+            elif instr[0] == 'POP':
+                if self.stack:
+                    self.stack.pop()
             self.pc += 1
         return self.stack[-1] if self.stack else None
 
@@ -464,7 +491,10 @@ def calculator_session(calc_name):
             result = vm.run(bytecode)
             if result is not None:
                 console.print(f"[bold green]Result: {result}[/bold green]")
-                history.append((expr, result))
+                # Prevent duplicate consecutive entries
+                if not history or history[-1][0] != expr:
+                    history.append((expr, result))
+                save_history(calc_name, history)  # Save after each calculation
         except Exception as e:
             console.print(f"[bold red]Error: {str(e)}[/bold red]")
         except KeyboardInterrupt:
